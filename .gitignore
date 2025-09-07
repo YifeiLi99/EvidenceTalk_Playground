@@ -1,0 +1,36 @@
+# Python 缓存/编译文件
+__pycache__/
+*.py[cod]
+*.so
+.idea/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Jupyter Notebook 检查点
+.ipynb_checkpoints/
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+
+# 大文件：音频、模型权重
+*.wav
+*.mp3
+*.flac
+*.pth
+*.pt
+*.onnx
+
+# 数据与结果缓存
+data/
+outputs/
+checkpoints/
+runs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
