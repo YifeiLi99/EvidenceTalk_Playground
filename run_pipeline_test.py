@@ -1,77 +1,139 @@
+# run_pipeline_test.py
 """
 极简测试版
 """
-
 import os
-from typing import Optional
+from typing import Optional, Tuple
 from openai import OpenAI
 import gradio as gr
-from gradio.themes import Soft
+# [改动点A] 去掉主题导入，避免某些版本下 theme 也参与 schema 组合出坑
+# from gradio.themes import Soft
+from configs.config import OPENAI_MODEL
 
-DEFAULT_MODEL = "gpt-5-mini"  # 如需改模型，改这里即可
+# [改动点B] 恢复为同级 asr.py 导入（如果你确实有 packages 结构再改回去）
+from pipelines.asr import transcribe  # 使用你自己的 asr.py
 
-SYSTEM_PROMPT = """你是一名销售助理。你会接收一段通过麦克风转录得到的客户对话文本。
-请只进行一次性分析，不要反问或进行多轮互动。
-请根据客户的表述，尽可能提取其画像信息，输出需简洁、结构化、要点清晰，默认使用中文。
-"""
+def load_prompts(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    parts = content.split("[USER_ANALYSIS_INSTR]")
+    system_prompt = parts[0].replace("[SYSTEM_PROMPT]", "").strip()
+    user_instr = parts[1].strip()
+    return system_prompt, user_instr
 
-USER_ANALYSIS_INSTR = """请分析以下销售对话文本，推测并总结客户的关键信息，包括但不限于：
-1) 客户类型（如学生、上班族、个体户、企业主等）
-2) 生活方式（如消费习惯、兴趣偏好、日常作息等）
-3) 家庭状况（如是否已婚、有无子女、家庭成员特点等）
-4) 收入情况（如收入水平、大致来源、消费能力等）
-如果某项信息无法从文本中确定，请标注为“未知”。
-文本：
-"""
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROMPT_FILE = os.path.join(BASE_DIR, "prompts", "extract_profile_system.txt")
+SYSTEM_PROMPT, USER_ANALYSIS_INSTR = load_prompts(PROMPT_FILE)
 
 def run_once(text: str, api_key: Optional[str]) -> str:
     if not text or not text.strip():
         return "❌ 请输入要分析的文本。"
     if not api_key or not api_key.strip():
         return "❌ 请输入有效的 OpenAI API Key。"
-
     client = OpenAI(api_key=api_key.strip(), timeout=60.0)
-
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": USER_ANALYSIS_INSTR + text.strip()},
     ]
-
     try:
-        resp = client.chat.completions.create(
-            model=DEFAULT_MODEL,
-            messages=messages,
-        )
+        resp = client.chat.completions.create(model=OPENAI_MODEL, messages=messages)
         return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"❌ 调用失败：{type(e).__name__}: {e}"
 
-def build_ui():
-    with gr.Blocks(title="最简文本分析 Demo", theme=Soft()) as demo:
-        gr.Markdown("## 最简文本分析 Demo\n只输入文本与 API Key，一次调用 GPT 输出结果。")
+# [改动点C] 新增：稳健解析 gr.File 的值为“本地文件路径”
+def _resolve_file_to_path(f) -> Optional[str]:
+    # gr.File 可能传 dict、临时文件对象或直接字符串
+    if f is None:
+        return None
+    if isinstance(f, str):
+        return f
+    if isinstance(f, dict):
+        # gradio v4 常见结构：{"name": ".../tmp/xxx.wav", "size":..., "orig_name":"xxx.wav", ...}
+        return f.get("name") or f.get("path") or f.get("orig_name")
+    # 临时文件对象
+    name = getattr(f, "name", None)
+    if isinstance(name, str):
+        return name
+    return None
 
+def asr_then_analyze(file_obj, api_key: Optional[str],
+                     asr_model: str = "large-v3", asr_lang: str = "zh") -> Tuple[str, str]:
+    audio_path = _resolve_file_to_path(file_obj)
+    if not audio_path:
+        return "❌ 请先上传 WAV 音频。", ""
+    if not os.path.exists(audio_path):
+        return f"❌ 找不到音频文件：{audio_path}", ""
+    if not api_key or not api_key.strip():
+        return "❌ 请输入有效的 OpenAI API Key。", ""
+    try:
+        turns = transcribe(audio_path, model_name=asr_model, lang=asr_lang)  # 你的 asr.py
+        asr_text = "\n".join(turns).strip() if turns else ""
+        if not asr_text:
+            return "⚠️ ASR 未识别到有效文本。", ""
+    except Exception as e:
+        return f"❌ ASR 失败：{type(e).__name__}: {e}", ""
+    llm_result = run_once(asr_text, api_key)
+    return asr_text, llm_result
+
+def build_ui():
+    # [改动点D] 去掉 theme=Soft()，只用最基础 Blocks
+    with gr.Blocks(title="ASR → 文本画像分析 Demo") as demo:
+        gr.Markdown(
+            "## ASR → 文本画像分析 Demo\n"
+            "- 上传 WAV → 点击按钮 → 自动转写并调用 LLM 输出结构化分析。\n"
+            "- 提示词从 `prompts/extract_profile_system.txt` 读取。"
+        )
         with gr.Row():
             with gr.Column():
                 api_key = gr.Textbox(label="OpenAI API Key", type="password", placeholder="sk-...")
-                text_in = gr.Textbox(label="输入文本", lines=8, placeholder="把要分析的文本粘贴到这里")
-                btn = gr.Button("开始分析", variant="primary")
+                # [改动点E] gr.File 仅保留最小参数，避免 schema 分支触发
+                audio_in = gr.Textbox(
+                    label="音频绝对路径（只要 .wav）",
+                    placeholder=r"C:\path\to\your.wav"
+                )
+                with gr.Accordion("ASR 参数（可选）", open=False):
+                    asr_model = gr.Textbox(value="large-v3", label="Whisper 模型名")
+                    asr_lang = gr.Textbox(value="zh", label="语言代码")
+                btn = gr.Button("转写并分析", variant="primary")
             with gr.Column():
-                out = gr.Textbox(label="分析结果", lines=14)
+                asr_out = gr.Textbox(label="ASR 转写结果", lines=10)
+                llm_out = gr.Textbox(label="LLM 分析结果", lines=14)
 
-        def on_click(t, k):
-            return run_once(t, k)
+        def on_click(path_str, k, m, lang):
+            return asr_then_analyze_path(path_str, k, asr_model=m, asr_lang=lang)
+        btn.click(fn=on_click, inputs=[audio_in, api_key, asr_model, asr_lang], outputs=[asr_out, llm_out])
 
-        btn.click(fn=on_click, inputs=[text_in, api_key], outputs=out)
+        def asr_then_analyze_path(audio_path: Optional[str], api_key: Optional[str],
+                                  asr_model: str = "large-v3", asr_lang: str = "zh"):
+            if not audio_path or not audio_path.strip():
+                return "❌ 请先填入 WAV 的绝对路径。", ""
+            audio_path = audio_path.strip().strip('"')
+            if not os.path.exists(audio_path):
+                return f"❌ 找不到音频文件：{audio_path}", ""
+            if not audio_path.lower().endswith(".wav"):
+                return f"❌ 仅支持 .wav 文件：{audio_path}", ""
+            if not api_key or not api_key.strip():
+                return "❌ 请输入有效的 OpenAI API Key。", ""
+
+            try:
+                turns = transcribe(audio_path, model_name=asr_model, lang=asr_lang)
+                asr_text = "\n".join(turns).strip() if turns else ""
+                if not asr_text:
+                    return "⚠️ ASR 未识别到有效文本。", ""
+            except Exception as e:
+                return f"❌ ASR 失败：{type(e).__name__}: {e}", ""
+
+            llm_result = run_once(asr_text, api_key)
+            return asr_text, llm_result
 
     return demo
 
 if __name__ == "__main__":
     ui = build_ui()
     try:
-        # 默认尝试本地访问
         ui.launch()
     except ValueError as e:
-        # 若环境不允许 localhost，自动回退为可分享链接
         msg = str(e)
         if "localhost is not accessible" in msg or "shareable link must be created" in msg:
             print("⚠️ 本地回环不可达，自动使用 share=True 重启。")

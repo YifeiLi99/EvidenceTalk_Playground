@@ -1,322 +1,142 @@
+# run_pipeline_test.py
 """
-主逻辑
+极简测试版
 """
-
 import os
-import sys
-import time
-import json
-import traceback
-import argparse
-import logging
-from logging.handlers import RotatingFileHandler
-from collections import deque
-from contextlib import contextmanager
-from typing import List, Dict, Any
-from pipelines.extract_ie import extract_profile
+from typing import Optional, Tuple
+from openai import OpenAI
+import gradio as gr
+# [改动点A] 去掉主题导入，避免某些版本下 theme 也参与 schema 组合出坑
+# from gradio.themes import Soft
+from configs.config import OPENAI_MODEL
 
-# ---------------------------
-# 兼容导入（包式/扁平式目录都可）
-# ---------------------------
-try:
-    from configs import config as _config_mod  # 如果你有包式结构
-    from pipelines.asr import transcribe as _asr_transcribe
-    CONFIG_IMPORTED_FROM = "package"
-except Exception:
-    import importlib
-    import pathlib
-    sys.path.append(str(pathlib.Path(__file__).parent.resolve()))
-    _config_mod = importlib.import_module("config")
-    _asr_transcribe = importlib.import_module("asr").transcribe
-    CONFIG_IMPORTED_FROM = "flat"
+# [改动点B] 恢复为同级 asr.py 导入（如果你确实有 packages 结构再改回去）
+from pipelines.asr import transcribe  # 使用你自己的 asr.py
 
-config = _config_mod  # 统一命名
+def load_prompts(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    parts = content.split("[USER_ANALYSIS_INSTR]")
+    system_prompt = parts[0].replace("[SYSTEM_PROMPT]", "").strip()
+    user_instr = parts[1].strip()
+    return system_prompt, user_instr
 
-# ---------------------------
-# 日志环 & 常量
-# ---------------------------
-_UI_RING = deque(maxlen=getattr(config, "MAX_LOG_LINES_SHOWN", 200))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROMPT_FILE = os.path.join(BASE_DIR, "prompts", "extract_profile_system.txt")
+SYSTEM_PROMPT, USER_ANALYSIS_INSTR = load_prompts(PROMPT_FILE)
 
-# ---------------------------
-# 日志初始化
-# ---------------------------
-def _init_logger():
-    os.makedirs(getattr(config, "LOG_DIR", "outputs/logs"), exist_ok=True)
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    trace_id = f"run_{ts}"
-    log_path = os.path.join(getattr(config, "LOG_DIR", "outputs/logs"), f"{trace_id}.log")
-
-    logger = logging.getLogger(trace_id)
-    logger.setLevel(logging.DEBUG)
-
-    fh = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-
-    sh = logging.StreamHandler()
-    sh.setLevel(logging.INFO)
-    sh.setFormatter(logging.Formatter("%(levelname)s | %(message)s"))
-
-    logger.addHandler(fh)
-    logger.addHandler(sh)
-    return logger, trace_id, log_path
-
-
-def _ui_log(logger, level, msg):
-    level = level.lower()
-    getattr(logger, level)(msg)
-    _UI_RING.append(msg)
-
-
-@contextmanager
-def _stage(logger, name):
-    t0 = time.time()
-    _ui_log(logger, "INFO", f"▶ 开始阶段：{name}")
+def run_once(text: str, api_key: Optional[str]) -> str:
+    if not text or not text.strip():
+        return "❌ 请输入要分析的文本。"
+    if not api_key or not api_key.strip():
+        return "❌ 请输入有效的 OpenAI API Key。"
+    client = OpenAI(api_key=api_key.strip(), timeout=60.0)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_ANALYSIS_INSTR + text.strip()},
+    ]
     try:
-        yield
-        dt = (time.time() - t0) * 1000.0
-        _ui_log(logger, "INFO", f"✓ 完成阶段：{name}（{dt:.1f} ms）")
+        resp = client.chat.completions.create(model=OPENAI_MODEL, messages=messages)
+        return resp.choices[0].message.content.strip()
     except Exception as e:
-        _ui_log(logger, "ERROR", f"✗ 阶段失败：{name} | {e.__class__.__name__}: {e}")
-        _ui_log(logger, "ERROR", traceback.format_exc())
-        raise
+        return f"❌ 调用失败：{type(e).__name__}: {e}"
 
+# [改动点C] 新增：稳健解析 gr.File 的值为“本地文件路径”
+def _resolve_file_to_path(f) -> Optional[str]:
+    # gr.File 可能传 dict、临时文件对象或直接字符串
+    if f is None:
+        return None
+    if isinstance(f, str):
+        return f
+    if isinstance(f, dict):
+        # gradio v4 常见结构：{"name": ".../tmp/xxx.wav", "size":..., "orig_name":"xxx.wav", ...}
+        return f.get("name") or f.get("path") or f.get("orig_name")
+    # 临时文件对象
+    name = getattr(f, "name", None)
+    if isinstance(name, str):
+        return name
+    return None
 
-# ---------------------------
-# 基础工具
-# ---------------------------
-def _ensure_dirs():
-    os.makedirs(getattr(config, "AUDIO_DIR", "data/raw"), exist_ok=True)
-    os.makedirs(getattr(config, "OUTPUT_DIR", "outputs/reports"), exist_ok=True)
-    os.makedirs(getattr(config, "LOG_DIR", "outputs/logs"), exist_ok=True)
-
-
-def _prepare_audio_file(source_mode: str, uploaded_file_path: str, manual_path: str) -> str:
-    """
-    返回可读音频文件的绝对路径（不做复制，直接使用给定路径/上传临时路径）。
-    """
-    if source_mode == "upload":
-        if not uploaded_file_path:
-            raise FileNotFoundError("未检测到上传音频。")
-        if not os.path.exists(uploaded_file_path):
-            raise FileNotFoundError(f"上传音频路径不存在：{uploaded_file_path}")
-        return uploaded_file_path
-    elif source_mode == "manual":
-        p = (manual_path or "").strip()
-        if not p:
-            raise FileNotFoundError("未填写本地音频路径。")
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"本地音频路径不存在：{p}")
-        return p
-    else:
-        raise ValueError(f"未知的 source_mode：{source_mode}")
-
-
-def redact(text: str) -> str:
-    """极简脱敏示例：可按需替换为更复杂规则。"""
-    return text.replace("sk-", "sk-*****")
-
-
-def _limit_len(turns: List[str], max_chars: int) -> List[str]:
-    buf, total = [], 0
-    for t in turns:
-        if total + len(t) <= max_chars:
-            buf.append(t)
-            total += len(t)
-        else:
-            remain = max_chars - total
-            if remain > 0:
-                buf.append(t[:remain])
-            break
-    return buf
-
-# ---------------------------
-# 主流程（供 UI/CLI 调用）
-# ---------------------------
-def analyze_once(
-    audio,
-    source_mode: str,
-    manual_path: str,
-    openai_key: str,
-    openai_base_url: str,
-    override_model: str,
-):
-    """
-    返回：(asr_text, profile_json, status_text, debug_tail)
-    - asr_text: ASR 文本
-    - profile_json: 画像 JSON 字符串
-    - status_text: 状态/提示/日志路径
-    - debug_tail: 最近 N 行日志
-    """
-    logger, trace_id, log_path = _init_logger()
-    _ui_log(logger, "INFO", f"Trace ID: {trace_id} | config_from={CONFIG_IMPORTED_FROM}")
-
+def asr_then_analyze(file_obj, api_key: Optional[str],
+                     asr_model: str = "large-v3", asr_lang: str = "zh") -> Tuple[str, str]:
+    audio_path = _resolve_file_to_path(file_obj)
+    if not audio_path:
+        return "❌ 请先上传 WAV 音频。", ""
+    if not os.path.exists(audio_path):
+        return f"❌ 找不到音频文件：{audio_path}", ""
+    if not api_key or not api_key.strip():
+        return "❌ 请输入有效的 OpenAI API Key。", ""
     try:
-        with _stage(logger, "目录准备"):
-            _ensure_dirs()
-
-        with _stage(logger, "输入音频准备"):
-            audio_path = _prepare_audio_file(source_mode, getattr(audio, "name", None), manual_path)
-            _ui_log(logger, "INFO", f"定位到音频：{audio_path}")
-
-        with _stage(logger, "OpenAI Key 设置"):
-            if openai_key:
-                os.environ["OPENAI_API_KEY"] = openai_key
-            if not os.getenv("OPENAI_API_KEY"):
-                raise RuntimeError("未检测到 OPENAI_API_KEY。请在 UI 中填入或在系统环境中设置。")
-            base_url = (openai_base_url or "").strip() or None
-            if base_url and not (base_url.startswith("http://") or base_url.startswith("https://")):
-                raise ValueError(f"Base URL 非法：{base_url}")
-
-        with _stage(logger, "ASR 转写"):
-            asr_model = getattr(config, "ASR_MODEL", "large-v3")
-            asr_lang = getattr(config, "ASR_LANG", "zh")
-            _ui_log(logger, "INFO", f"ASR 参数：model={asr_model}, lang={asr_lang}")
-            turns = _asr_transcribe(audio_path, asr_model, asr_lang)
-            if not turns:
-                raise RuntimeError("ASR 未返回任何文本。请检查音频是否是可识别的语音片段。")
-            _ui_log(logger, "INFO", f"ASR 行数：{len(turns)}")
-
-        with _stage(logger, "脱敏与限长"):
-            turns = [redact(t) for t in turns]
-            max_chars = getattr(config, "MAX_CHARS_TO_LLM", 3000)
-            before = sum(len(t) for t in turns)
-            turns = _limit_len(turns, max_chars)
-            after = sum(len(t) for t in turns)
-            _ui_log(logger, "INFO", f"长度裁剪：{before} → {after} 字符")
-
-        with _stage(logger, "Schema/Prompt 加载"):
-            schema_path = os.path.join("schemas", "customer_profile.schema.json")
-            prompt_path = os.path.join("prompts", "extract_profile_system.txt")
-            if not os.path.exists(schema_path):
-                raise FileNotFoundError(f"缺少 Schema：{schema_path}")
-            if not os.path.exists(prompt_path):
-                raise FileNotFoundError(f"缺少 Prompt：{prompt_path}")
-            with open(schema_path, "r", encoding="utf-8") as f:
-                schema = json.load(f)
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                sys_prompt = f.read()
-
-        with _stage(logger, "LLM 抽取"):
-            model_name = (override_model or "").strip() or getattr(config, "OPENAI_MODEL", "gpt-5")
-            _ui_log(logger, "INFO", f"LLM 参数：model={model_name}, base_url={base_url or '默认'}")
-            profile = extract_profile(turns=turns, schema=schema, system_prompt=sys_prompt,
-                                      model=model_name, base_url=base_url)
-            if not isinstance(profile, dict):
-                raise TypeError("LLM 返回非 JSON 对象。")
-
-        with _stage(logger, "结果保存"):
-            base = os.path.splitext(os.path.basename(audio_path))[0]
-            out_dir = getattr(config, "OUTPUT_DIR", "outputs/reports")
-            os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, f"{base}.json")
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(profile, f, ensure_ascii=False, indent=2)
-            _ui_log(logger, "INFO", f"输出已保存：{out_path}")
-
-        # 汇总 UI 输出
-        asr_text = "\n".join(turns)
-        profile_json = json.dumps(profile, ensure_ascii=False, indent=2)
-        status = (
-            f"✅ 完成（Trace: {trace_id}）。\n日志文件：{log_path}\n"
-            f"提示：如需查看详细栈信息，请打开日志文件。"
-        )
-        debug_tail = "\n".join(_UI_RING)
-        return asr_text, profile_json, status, debug_tail
-
+        turns = transcribe(audio_path, model_name=asr_model, lang=asr_lang)  # 你的 asr.py
+        asr_text = "\n".join(turns).strip() if turns else ""
+        if not asr_text:
+            return "⚠️ ASR 未识别到有效文本。", ""
     except Exception as e:
-        err = (
-            f"❌ 失败（Trace: {trace_id}）：{e}\n"
-            f"日志文件：{log_path}\n"
-            f"请展开调试日志或打开日志文件定位失败阶段与堆栈。"
-        )
-        return "", "", err, "\n".join(_UI_RING)
+        return f"❌ ASR 失败：{type(e).__name__}: {e}", ""
+    llm_result = run_once(asr_text, api_key)
+    return asr_text, llm_result
 
-
-# ---------------------------
-# Gradio UI
-# ---------------------------
 def build_ui():
-    import gradio as gr
-
-    with gr.Blocks(title="Sales Call Analyzer", theme="soft") as demo:
-        gr.Markdown("## 销售通话分析 - Pipeline (带阶段化日志)")
-
+    # [改动点D] 去掉 theme=Soft()，只用最基础 Blocks
+    with gr.Blocks(title="ASR → 文本画像分析 Demo") as demo:
+        gr.Markdown(
+            "## ASR → 文本画像分析 Demo\n"
+            "- 上传 WAV → 点击按钮 → 自动转写并调用 LLM 输出结构化分析。\n"
+            "- 提示词从 `prompts/extract_profile_system.txt` 读取。"
+        )
         with gr.Row():
             with gr.Column():
-                source_mode = gr.Radio(
-                    ["upload", "manual"], value="upload", label="音频来源 (upload=上传 / manual=本地路径)"
+                api_key = gr.Textbox(label="OpenAI API Key", type="password", placeholder="sk-...")
+                # [改动点E] gr.File 仅保留最小参数，避免 schema 分支触发
+                audio_in = gr.Textbox(
+                    label="音频绝对路径（只要 .wav）",
+                    placeholder=r"C:\path\to\your.wav"
                 )
-                audio = gr.Audio(label="上传音频（选择 upload 模式）", type="filepath")
-                manual_path = gr.Textbox(label="本地音频路径（选择 manual 模式）", placeholder="例如：data/raw/demo.wav")
-
-                openai_key = gr.Textbox(label="OpenAI API Key", type="password")
-                openai_base_url = gr.Textbox(label="自定义 Base URL（可选）", placeholder="留空使用默认官方网关")
-                override_model = gr.Textbox(label="覆盖模型名（可选）", placeholder="留空使用 config.OPENAI_MODEL")
-
-                analyze_btn = gr.Button("开始分析", variant="primary")
-
+                with gr.Accordion("ASR 参数（可选）", open=False):
+                    asr_model = gr.Textbox(value="large-v3", label="Whisper 模型名")
+                    asr_lang = gr.Textbox(value="zh", label="语言代码")
+                btn = gr.Button("转写并分析", variant="primary")
             with gr.Column():
-                asr_out = gr.Textbox(label="ASR 转写文本", lines=10)
-                profile_out = gr.Textbox(label="LLM 画像 JSON", lines=10)
-                status_out = gr.Textbox(label="状态 / 提示", lines=5)
+                asr_out = gr.Textbox(label="ASR 转写结果", lines=10)
+                llm_out = gr.Textbox(label="LLM 分析结果", lines=14)
 
-        with gr.Accordion("调试日志（最近 N 行）", open=False):
-            debug_log = gr.Textbox(label="Log Tail", lines=12)
-            refresh_btn = gr.Button("刷新日志")
+        def on_click(path_str, k, m, lang):
+            return asr_then_analyze_path(path_str, k, asr_model=m, asr_lang=lang)
+        btn.click(fn=on_click, inputs=[audio_in, api_key, asr_model, asr_lang], outputs=[asr_out, llm_out])
 
-        def _dump_ui_log():
-            return "\n".join(_UI_RING)
+        def asr_then_analyze_path(audio_path: Optional[str], api_key: Optional[str],
+                                  asr_model: str = "large-v3", asr_lang: str = "zh"):
+            if not audio_path or not audio_path.strip():
+                return "❌ 请先填入 WAV 的绝对路径。", ""
+            audio_path = audio_path.strip().strip('"')
+            if not os.path.exists(audio_path):
+                return f"❌ 找不到音频文件：{audio_path}", ""
+            if not audio_path.lower().endswith(".wav"):
+                return f"❌ 仅支持 .wav 文件：{audio_path}", ""
+            if not api_key or not api_key.strip():
+                return "❌ 请输入有效的 OpenAI API Key。", ""
 
-        analyze_btn.click(
-            fn=analyze_once,
-            inputs=[audio, source_mode, manual_path, openai_key, openai_base_url, override_model],
-            outputs=[asr_out, profile_out, status_out, debug_log],
-        )
-        refresh_btn.click(fn=_dump_ui_log, inputs=None, outputs=debug_log)
+            try:
+                turns = transcribe(audio_path, model_name=asr_model, lang=asr_lang)
+                asr_text = "\n".join(turns).strip() if turns else ""
+                if not asr_text:
+                    return "⚠️ ASR 未识别到有效文本。", ""
+            except Exception as e:
+                return f"❌ ASR 失败：{type(e).__name__}: {e}", ""
+
+            llm_result = run_once(asr_text, api_key)
+            return asr_text, llm_result
 
     return demo
 
-
-# ---------------------------
-# CLI
-# ---------------------------
-def run_cli(args):
-    dummy_audio = type("Dummy", (), {"name": args.cli})  # 伪装成 gradio 的文件对象
-    asr_text, profile_json, status, debug_tail = analyze_once(
-        audio=dummy_audio,
-        source_mode="manual",
-        manual_path=args.cli,
-        openai_key=args.key or "",
-        openai_base_url=args.base_url or "",
-        override_model=args.model or "",
-    )
-    print(status)
-    if asr_text:
-        print("\n=== ASR ===")
-        print(asr_text)
-    if profile_json:
-        print("\n=== PROFILE ===")
-        print(profile_json)
-    if debug_tail:
-        print("\n=== LOG TAIL ===")
-        print(debug_tail)
-
-
-# ---------------------------
-# 入口
-# ---------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sales Call Analyzer")
-    parser.add_argument("--cli", type=str, help="以 CLI 模式分析指定音频文件（跳过 GUI）")
-    parser.add_argument("--key", type=str, help="OpenAI API Key（CLI 模式可选）")
-    parser.add_argument("--base_url", type=str, help="自定义 OpenAI Base URL（CLI 模式可选）")
-    parser.add_argument("--model", type=str, help="覆盖模型名（CLI 模式可选）")
-    args = parser.parse_args()
-
-    if args.cli:
-        run_cli(args)
-    else:
-        ui = build_ui()
-        ui.launch(server_name=getattr(config, "GRADIO_SERVER_NAME", "127.0.0.1"),
-                  server_port=getattr(config, "GRADIO_SERVER_PORT", 7860))
+    ui = build_ui()
+    try:
+        ui.launch()
+    except ValueError as e:
+        msg = str(e)
+        if "localhost is not accessible" in msg or "shareable link must be created" in msg:
+            print("⚠️ 本地回环不可达，自动使用 share=True 重启。")
+            ui.launch(share=True)
+        else:
+            raise

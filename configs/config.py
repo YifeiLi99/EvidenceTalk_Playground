@@ -12,7 +12,7 @@ ASR_MODEL = "large-v3"   # 显存紧张可改为 "medium" / "small"
 ASR_LANG = "zh"
 
 # LLM
-OPENAI_MODEL = "gpt-5"   # 可在 UI 覆盖；或 CLI --model 覆盖
+OPENAI_MODEL = "gpt-5-mini"   # 自由调整
 OPENAI_BASE_URL = None   # 留空使用官方；也可在 UI 覆盖
 
 # 控制
