@@ -1,9 +1,5 @@
 """
-asr.py — 完全替换版
-特性：
-- 优先 CUDA + float16；失败则自动降级到 CPU + int8
-- 明确打印 device / compute_type / 耗时
-- 语句切分：按中英文句末符号做粗切，保留 [T1]、[T2] 标号格式
+asr模块
 """
 
 import os

@@ -1,14 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-extract_ie.py — 信息抽取（健壮版）
-改动要点：
-- [ADD] 在 system 指令中**内嵌 schema 文本**，让模型严格对齐字段与类型
-- [ADD] 先尝试 JSON-mode；若失败，**回退普通文本**并做外层 JSON 截取
-- [ADD] 更可读的 jsonschema 校验：Draft2020 + format_checker + 聚合报错路径
-- [ADD] 限长兜底（字符级），避免极端长输入直接超限
-- [ADD] 详细异常上下文：模型名 / base_url / 片段预览
-- [ADD] 可选 max_chars, temperature, seed 等参数
-- [ADD] 明确超时（OpenAI SDK）
+信息抽取模块
 """
 
 import json

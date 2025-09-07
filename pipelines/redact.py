@@ -1,3 +1,6 @@
+"""
+隐私处理
+"""
 import re
 def redact(text: str) -> str:
     text = re.sub(r'\b1[3-9]\d{9}\b', '***PHONE***', text)    # 手机

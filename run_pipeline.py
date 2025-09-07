@@ -1,17 +1,5 @@
 """
-run_pipeline.py  — 完全替换版
-特性：
-1) 分阶段执行器：任何异常都会定位到“失败阶段：XXX”
-2) 双日志：文件(详尽 DEBUG) + 控制台(简要 INFO)；UI 可查看最近 N 行
-3) 显式自检：OpenAI Key / Base URL / Schema / Prompt
-4) ASR 结果为空的硬校验；LLM JSON 返回体的类型校验
-5) 仅使用相对路径；目录自动创建
-6) 支持 Gradio GUI 与 CLI 两种入口
-
-依赖（建议）：
-- gradio>=4
-- openai>=1.0.0
-- faster-whisper>=1.0.0（在 asr.py 内部用）
+主逻辑
 """
 
 import os
@@ -25,6 +13,7 @@ from logging.handlers import RotatingFileHandler
 from collections import deque
 from contextlib import contextmanager
 from typing import List, Dict, Any
+from pipelines.extract_ie import extract_profile
 
 # ---------------------------
 # 兼容导入（包式/扁平式目录都可）
@@ -140,76 +129,6 @@ def _limit_len(turns: List[str], max_chars: int) -> List[str]:
                 buf.append(t[:remain])
             break
     return buf
-
-
-# ---------------------------
-# LLM 抽取（OpenAI SDK）
-# ---------------------------
-def extract_profile(
-    turns: List[str],
-    schema: Dict[str, Any],
-    system_prompt: str,
-    model: str,
-    base_url: str = None,
-) -> Dict[str, Any]:
-    """
-    调用 OpenAI 兼容接口，强制 JSON 返回。
-    若新 SDK (openai>=1.0.0)，优先使用 client.chat.completions；
-    如网关仅支持老式端点，也能兼容。
-    """
-    try:
-        from openai import OpenAI  # 官方 SDK v1+
-    except Exception as e:
-        raise RuntimeError("未安装 openai SDK，请先 pip install openai>=1.0.0") from e
-
-    client_kwargs = {}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-
-    client = OpenAI(**client_kwargs)
-
-    user_content = "请从以下转写文本中抽取客户画像信息，严格输出 JSON：\n\n" + "\n".join(turns)
-    # 尝试 Chat Completions + JSON 模式
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            response_format={"type": "json_object"},  # 需要支持 JSON mode 的模型
-            temperature=0.1,
-        )
-        text = resp.choices[0].message.content
-        data = json.loads(text)
-        # 可选：简单 schema 字段校验（只校验顶层 key 存在）
-        if isinstance(schema, dict) and "properties" in schema:
-            for key in schema["properties"].keys():
-                if key not in data:
-                    # 不强制报错，只在缺失时补 None
-                    data.setdefault(key, None)
-        return data
-    except Exception as e_json_mode:
-        # 退回普通文本，再尝试解析 JSON（为兼容不支持 JSON mode 的网关）
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt + "\n务必仅输出 JSON 对象，不要包含其他文本。"},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.1,
-        )
-        text = resp.choices[0].message.content.strip()
-        # 抽取最外层 JSON（简单做法：从第一个 { 到最后一个 }）
-        l, r = text.find("{"), text.rfind("}")
-        if l >= 0 and r >= 0 and r > l:
-            text = text[l : r + 1]
-        try:
-            data = json.loads(text)
-        except Exception as e_parse:
-            raise TypeError(f"LLM 返回无法解析为 JSON。原文片段：{text[:200]} ...") from e_parse
-        return data
-
 
 # ---------------------------
 # 主流程（供 UI/CLI 调用）
