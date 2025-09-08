@@ -1,4 +1,3 @@
-# run_pipeline_test.py
 """
 极简测试版
 """
@@ -6,16 +5,12 @@ import os
 from typing import Optional, Tuple
 from openai import OpenAI
 import gradio as gr
-# [改动点A] 去掉主题导入，避免某些版本下 theme 也参与 schema 组合出坑
-# from gradio.themes import Soft
 from configs.config import OPENAI_MODEL
-# [ADD] 结构化提取
 import os
 import json
 from pipelines.extract_ie import extract_profile  # 与最终版 extract_ie.py 保持同目录可导入
 
-
-# [改动点B] 恢复为同级 asr.py 导入（如果你确实有 packages 结构再改回去）
+# 恢复为同级 asr.py 导入（如果你确实有 packages 结构再改回去）
 from pipelines.asr import transcribe  # 使用你自己的 asr.py
 
 def load_prompts(path: str):
@@ -30,27 +25,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 #PROMPT_FILE = os.path.join(BASE_DIR, "prompts", "extract_profile_system.txt")
 SCHEMA_FILE = os.path.join(BASE_DIR, "schemas", "customer_profile.schema.json")   # 与你刚替换的 schema 文件同目录
 PROMPT_FILE = os.path.join(BASE_DIR, "prompts", "extract_profile_system_json.txt")     # 与上面提供的最终版 system prompt 同目录
-# [ADD] 加载资源（在程序启动时加载一次）
+# 加载资源（在程序启动时加载一次）
 with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
     IE_SCHEMA = json.load(f)
 with open(PROMPT_FILE, "r", encoding="utf-8") as f:
     IE_SYSTEM_PROMPT = f.read()
 SYSTEM_PROMPT, USER_ANALYSIS_INSTR = load_prompts(PROMPT_FILE)
 
-# [MOD] 用结构化信息抽取替换原来的自由回答分析
+# 用结构化信息抽取替换原来的自由回答分析
 def run_once(text: str, api_key: str):
     """
     输入：ASR 转写后的整段文本（可能含多行，建议已是 [T#] 前缀格式）
     输出：严格符合 schema 的 JSON（str）
     """
-    # [ADD] 将整段文本按行拆分为 turns；如果你上游已是 list[str]，可直接传入
+    # 将整段文本按行拆分为 turns；如果你上游已是 list[str]，可直接传入
     # 允许兼容两种输入：已经有 [T#] 行号的文本；或纯文本（会 splitlines）
     if "\n" in text:
         turns = [ln.strip() for ln in text.splitlines() if ln.strip()]
     else:
         turns = [text.strip()] if text.strip() else []
 
-    # [ADD] 关键调用：结构化抽取（严格 JSON，自动校验）
+    # 关键调用：结构化抽取（严格 JSON，自动校验）
     result = extract_profile(
         turns=turns,
         schema=IE_SCHEMA,
@@ -64,11 +59,11 @@ def run_once(text: str, api_key: str):
         request_timeout=60.0,
     )
 
-    # [ADD] 返回给 UI：字符串化后的 JSON（美化缩进）
+    # 返回给 UI：字符串化后的 JSON（美化缩进）
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-# [改动点C] 新增：稳健解析 gr.File 的值为“本地文件路径”
+# 稳健解析 gr.File 的值为“本地文件路径”
 def _resolve_file_to_path(f) -> Optional[str]:
     # gr.File 可能传 dict、临时文件对象或直接字符串
     if f is None:
@@ -104,7 +99,7 @@ def asr_then_analyze(file_obj, api_key: Optional[str],
     return asr_text, llm_result
 
 def build_ui():
-    # [改动点D] 去掉 theme=Soft()，只用最基础 Blocks
+    # 去掉 theme=Soft()，只用最基础 Blocks
     with gr.Blocks(title="ASR → 文本画像分析 Demo") as demo:
         gr.Markdown(
             "## ASR → 文本画像分析 Demo\n"
@@ -114,7 +109,7 @@ def build_ui():
         with gr.Row():
             with gr.Column():
                 api_key = gr.Textbox(label="OpenAI API Key", type="password", placeholder="sk-...")
-                # [改动点E] gr.File 仅保留最小参数，避免 schema 分支触发
+                # gr.File 仅保留最小参数，避免 schema 分支触发
                 audio_in = gr.Textbox(
                     label="音频绝对路径（只要 .wav）",
                     placeholder=r"C:\path\to\your.wav"

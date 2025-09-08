@@ -1,17 +1,12 @@
-# run_pipeline_test.py
 """
-极简测试版
+正式版（不进行json化）
 """
 import os
 from typing import Optional, Tuple
 from openai import OpenAI
 import gradio as gr
-# [改动点A] 去掉主题导入，避免某些版本下 theme 也参与 schema 组合出坑
-# from gradio.themes import Soft
 from configs.config import OPENAI_MODEL
-
-# [改动点B] 恢复为同级 asr.py 导入（如果你确实有 packages 结构再改回去）
-from pipelines.asr import transcribe  # 使用你自己的 asr.py
+from pipelines.asr import transcribe
 
 def load_prompts(path: str):
     with open(path, "r", encoding="utf-8") as f:
@@ -41,7 +36,7 @@ def run_once(text: str, api_key: Optional[str]) -> str:
     except Exception as e:
         return f"❌ 调用失败：{type(e).__name__}: {e}"
 
-# [改动点C] 新增：稳健解析 gr.File 的值为“本地文件路径”
+# 稳健解析 gr.File 的值为“本地文件路径”
 def _resolve_file_to_path(f) -> Optional[str]:
     # gr.File 可能传 dict、临时文件对象或直接字符串
     if f is None:
@@ -77,7 +72,7 @@ def asr_then_analyze(file_obj, api_key: Optional[str],
     return asr_text, llm_result
 
 def build_ui():
-    # [改动点D] 去掉 theme=Soft()，只用最基础 Blocks
+    #去掉 theme=Soft()，只用最基础 Blocks
     with gr.Blocks(title="ASR → 文本画像分析 Demo") as demo:
         gr.Markdown(
             "## ASR → 文本画像分析 Demo\n"
@@ -87,7 +82,7 @@ def build_ui():
         with gr.Row():
             with gr.Column():
                 api_key = gr.Textbox(label="OpenAI API Key", type="password", placeholder="sk-...")
-                # [改动点E] gr.File 仅保留最小参数，避免 schema 分支触发
+                # gr.File 仅保留最小参数，避免 schema 分支触发
                 audio_in = gr.Textbox(
                     label="音频绝对路径（只要 .wav）",
                     placeholder=r"C:\path\to\your.wav"

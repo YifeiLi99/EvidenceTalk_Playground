@@ -1,19 +1,18 @@
 """
 配置
 """
-
 # 目录
 AUDIO_DIR = "data/raw"
 OUTPUT_DIR = "outputs/reports"
 LOG_DIR = "outputs/logs"
 
 # ASR
-ASR_MODEL = "large-v3"   # 显存紧张可改为 "medium" / "small"
+ASR_MODEL = "large-v3"   # 显存紧张可改为 "medium"
 ASR_LANG = "zh"
 
 # LLM
 OPENAI_MODEL = "gpt-5-mini"   # 自由调整
-OPENAI_BASE_URL = None   # 留空使用官方；也可在 UI 覆盖
+OPENAI_BASE_URL = None   # 留空使用官方
 
 # 控制
 MAX_CHARS_TO_LLM = 3000

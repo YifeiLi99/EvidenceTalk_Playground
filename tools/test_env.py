@@ -1,7 +1,6 @@
 """
 环境自检
 """
-
 import sys
 import os
 import platform

@@ -2,7 +2,6 @@
 asr模块（稳字优先强化版）
 """
 
-# 【改动点-0】新增依赖/模块
 import os
 import time
 import re
@@ -10,43 +9,41 @@ from typing import List, Tuple, Optional, Dict
 from faster_whisper import WhisperModel
 
 # ============ 配置区域（可按需调整）============
-
-# 【改动点-1】相对路径：词表文件（每行一个词/短语）
+# 相对路径：词表文件（每行一个词/短语）
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LEXICON_PATH = os.path.join(BASE_DIR, "prompts", "lexicon.txt")
 
-# 【改动点-2】常错词 → 正确词 的强制替换字典（遇到就直接替换，后面还有更轻量的模糊纠错兜底）
-#   这里放你反馈的典型误识别。你后续可随时扩充。
+# 常错词 → 正确词 的强制替换字典（遇到就直接替换，后面还有更轻量的模糊纠错兜底）
 HARD_REPLACE: Dict[str, str] = {
     "子野姐": "理解",
     "分胎": "分开",
-    "外骑":"外勤",
-    "值吧":"值班",
-    "刺卡":"次卡",
-    "靠电":"靠垫"
-    # 你可以继续加： "某错词": "正确词",
+    "外骑": "外勤",
+    "值吧": "值班",
+    "刺卡": "次卡",
+    "靠电": "靠垫"
+    #可以继续加： "某错词": "正确词",
 }
 
-# 【改动点-3】ASR 过滤阈值（更稳）
-AVG_LOGPROB_DROP_TH = -1.2      # 段平均对数概率过低则丢弃
-NO_SPEECH_DROP_TH = 0.6         # 静音概率过高则丢弃
-LOW_WORD_PROB_TH = 0.50         # 词级置信度低于此阈值，用 «...» 标记
+# ASR 过滤阈值（更稳）
+AVG_LOGPROB_DROP_TH = -0.8  # 段平均对数概率过低则丢弃
+NO_SPEECH_DROP_TH = 0.45  # 静音概率过高则丢弃
+LOW_WORD_PROB_TH = 0.60  # 词级置信度低于此阈值，用 «...» 标记
 
-# 【改动点-4】解码参数（慢但稳）
+# 解码参数（慢但稳）
 DECODE_OPTS = dict(
-    beam_size=8,                # ↑搜索更充分
-    best_of=8,                  # ↑N-best内部采样
-    patience=1.2,               # 更耐心
-    temperature=[0.0, 0.2, 0.4],# 低温度先搜，减少幻听
+    beam_size=8,  # ↑搜索更充分
+    best_of=8,  # ↑N-best内部采样
+    patience=1.2,  # 更耐心
+    temperature=[0.0, 0.2, 0.4],  # 低温度先搜，减少幻听
 )
 
 VAD_PARAMS = dict(
-    min_silence_duration_ms=400 # 稍强的静音切分
+    min_silence_duration_ms=400,  # 稍强的静音切分
+    speech_pad_ms=150  # 段首尾各留 150ms，避免截断音节
 )
 
 # ============ 工具函数 ============
-
-# 【改动点-5】加载词表，拼成 initial_prompt（限制长度，避免过长）
+# 加载词表，拼成 initial_prompt（限制长度，避免过长）
 def _load_lexicon(path: str) -> List[str]:
     if not os.path.exists(path):
         return []
@@ -59,7 +56,7 @@ def _build_initial_prompt(lexicon: List[str], max_chars: int = 400) -> Optional[
     joined = " ".join(lexicon)
     return joined[:max_chars]
 
-# 【改动点-6】强制替换 + 可选模糊纠错（rapidfuzz 可选）
+# 强制替换 + 可选模糊纠错（rapidfuzz 可选）
 def _post_correct_text(text: str, lexicon: List[str]) -> str:
     # 1) 先做强制映射（不会触碰 «...» 中的不可靠词）
     def hard_replace_safe(s: str) -> str:
@@ -68,7 +65,6 @@ def _post_correct_text(text: str, lexicon: List[str]) -> str:
         parts = s.split("«")
         for idx, part in enumerate(parts):
             if idx == 0:
-                # outside unreliable
                 out.append(_hard_replace_plain(part))
             else:
                 unreliable, rest = part.split("»", 1) if "»" in part else (part, "")
@@ -82,7 +78,7 @@ def _post_correct_text(text: str, lexicon: List[str]) -> str:
 
     text = hard_replace_safe(text)
 
-    # 2) 可选：基于 lexicon 的轻量纠错（若 rapidfuzz 不存在则跳过）
+    # 基于 lexicon 的轻量纠错（若 rapidfuzz 不存在则跳过）
     try:
         from rapidfuzz import process, fuzz
     except Exception:
@@ -98,8 +94,7 @@ def _post_correct_text(text: str, lexicon: List[str]) -> str:
     return text
 
 # ============ 模型加载（本地优先 + 惰性）===========
-
-# 【改动点-7】支持本地目录优先；环境变量 ASR_LOCAL_MODEL_DIR 覆盖
+# 支持本地目录优先；环境变量 ASR_LOCAL_MODEL_DIR 覆盖
 _MODEL = None
 _MODEL_PATH = None
 
@@ -138,6 +133,7 @@ def _get_model(model_name: str) -> Tuple[WhisperModel, str, str, str]:
     _cache_model(model, device, compute, model_path)
     return _MODEL, _MODEL_DEVICE, _MODEL_COMPUTE, _MODEL_PATH
 
+
 def _cache_model(m, device, compute, path):
     global _MODEL, _MODEL_DEVICE, _MODEL_COMPUTE, _MODEL_PATH
     _MODEL = m
@@ -145,14 +141,14 @@ def _cache_model(m, device, compute, path):
     _MODEL_COMPUTE = compute
     _MODEL_PATH = path
 
-# ============ 主流程（稳字优先）===========
 
-# 【改动点-8】新增：返回“整段文本 + 质量报告”的接口（推荐在 UI 公屏展示）
+# ============ 主流程（稳字优先）===========
+# 返回“整段文本 + 质量报告”的接口（推荐在 UI 公屏展示）
 def transcribe_with_conf(
-    audio_path: str,
-    model_name: str = "large-v3",
-    lang: str = "zh",
-    low_word_prob: float = LOW_WORD_PROB_TH,
+        audio_path: str,
+        model_name: str = "large-v3",
+        lang: str = "zh",
+        low_word_prob: float = LOW_WORD_PROB_TH,
 ) -> Tuple[str, dict]:
     t0 = time.time()
     if not os.path.exists(audio_path):
@@ -171,9 +167,9 @@ def transcribe_with_conf(
         language=lang,
         vad_filter=True,
         vad_parameters=VAD_PARAMS,
-        word_timestamps=True,              # 词级置信度
-        condition_on_previous_text=True,   # 按上下文延续，减少突变
-        initial_prompt=init_prompt,        # 关键词引导
+        word_timestamps=True,  # 词级置信度
+        condition_on_previous_text=True,  # 按上下文延续，减少突变
+        initial_prompt=init_prompt,  # 关键词引导
         **DECODE_OPTS
     )
 
@@ -213,7 +209,7 @@ def transcribe_with_conf(
         "device": device,
         "compute_type": compute,
         "model_path": model_path,
-        "avg_logprob_mean": round(sum(avg_logs)/len(avg_logs), 3) if avg_logs else None,
+        "avg_logprob_mean": round(sum(avg_logs) / len(avg_logs), 3) if avg_logs else None,
         "segments_dropped": dropped,
         "elapsed_ms": int((time.time() - t0) * 1000),
         "low_word_prob_threshold": low_word_prob,
@@ -222,8 +218,9 @@ def transcribe_with_conf(
     }
     return corrected, report
 
-# 【改动点-9】兼容旧接口：仍返回逐句列表 + 带 [T#] 编号
+
+# 兼容旧接口：仍返回逐句列表 + 带 [T#] 编号
 def transcribe(audio_path: str, model_name: str = "large-v3", lang: str = "zh") -> List[str]:
     text, report = transcribe_with_conf(audio_path, model_name=model_name, lang=lang)
     parts = [p.strip() for p in re.split(r"[。！？!?；;]\s*", text) if p.strip()]
-    return [f"[T{i+1}] {p}" for i, p in enumerate(parts)]
+    return [f"[T{i + 1}] {p}" for i, p in enumerate(parts)]
