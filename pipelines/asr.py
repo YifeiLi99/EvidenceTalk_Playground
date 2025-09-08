@@ -1,13 +1,6 @@
 """
 asr模块（稳字优先强化版）
 """
-# ===========================
-# 重点改进：
-# 1) 允许更慢换更稳：beam_size↑、best_of↑、低温度、启用VAD与词级概率
-# 2) 错词治理：常错词映射 + 可选 rapidfuzz 轻量纠错
-# 3) 关键词/引导词表：读取 prompts/lexicon.txt 注入 initial_prompt
-# 4) 本地优先：model_name若是本地目录则直接加载；也支持环境变量 ASR_LOCAL_MODEL_DIR
-# ===========================
 
 # 【改动点-0】新增依赖/模块
 import os

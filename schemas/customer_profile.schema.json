@@ -1,24 +1,196 @@
 {
-  "type":"object",
-  "required":["customer_type","lifestyle","family_status","income"],
-  "properties":{
-    "customer_type":{"type":"string","enum":["新购","换购","增购","售后服务","unknown"]},
-    "lifestyle":{"type":"array","items":{"type":"string"}},
-    "family_status":{
-      "type":"object",
-      "required":["marital","children"],
-      "properties":{
-        "marital":{"type":"string","enum":["single","married","unknown"]},
-        "children":{"type":"string","enum":["has_children","none","unknown"]}
-      }
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/customer_profile.schema.json",
+  "title": "Customer Profile Extraction",
+  "description": "从销售-客户对话中抽取结构化客户画像结果（严格模式）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "customer_profile", "overall_confidence"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema/结果版本号，便于后续演进。",
+      "default": "1.0.0"
     },
-    "income":{
-      "type":"object",
-      "required":["value","confidence","evidence_turns"],
-      "properties":{
-        "value":{"type":"string"},
-        "confidence":{"type":"number","minimum":0,"maximum":1},
-        "evidence_turns":{"type":"array","items":{"type":"integer"}}
+    "conversation_id": {
+      "type": "string",
+      "description": "可选：对话标识（由上游系统提供）。"
+    },
+    "overall_confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "模型对本次抽取整体置信度（0~1）。"
+    },
+    "warnings": {
+      "type": "array",
+      "description": "非致命告警，例如‘关键信息不足’，用于调试与运营报警。",
+      "items": { "type": "string" }
+    },
+    "customer_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer_type", "lifestyle", "family_status", "income"],
+      "properties": {
+        "customer_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "confidence", "evidence_turns"],
+          "description": "客户在本次到店的业务类型/意图（与销售流程强相关）。",
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "业务类型（与公司流程一致的枚举）。",
+              "enum": [
+                "新购",
+                "换购",
+                "增购",
+                "售后服务",
+                "unknown"
+              ]
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "evidence_turns": {
+              "type": "array",
+              "description": "支撑该判断的行号（对应 ASR 输出中的 [T#]）。",
+              "items": { "type": "integer", "minimum": 1 },
+              "uniqueItems": true,
+              "default": []
+            },
+            "rationale": {
+              "type": "string",
+              "description": "可选：简要理由，供审阅与训练复盘。"
+            }
+          }
+        },
+
+        "lifestyle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confidence", "evidence_turns"],
+          "description": "生活方式（消费习惯/兴趣偏好/作息等）。缺失项留空或写'unknown'。",
+          "properties": {
+            "consumption_habits": {
+              "type": "string",
+              "description": "消费习惯（如价格敏感度、偏好套餐/体验卡等）。",
+              "default": "unknown"
+            },
+            "interests": {
+              "type": "string",
+              "description": "兴趣偏好（如健身、养生、运动类型等）。",
+              "default": "unknown"
+            },
+            "daily_routine": {
+              "type": "string",
+              "description": "日常作息/到店时段偏好等。",
+              "default": "unknown"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "evidence_turns": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "uniqueItems": true,
+              "default": []
+            }
+          }
+        },
+
+        "family_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["marital_status", "has_children", "confidence", "evidence_turns"],
+          "description": "家庭状况。",
+          "properties": {
+            "marital_status": {
+              "type": "string",
+              "enum": ["已婚", "未婚", "unknown"],
+              "description": "婚姻状态。"
+            },
+            "has_children": {
+              "type": "string",
+              "enum": ["有", "无", "unknown"],
+              "description": "是否有子女。"
+            },
+            "family_notes": {
+              "type": "string",
+              "description": "可选：家庭成员特点/照护需求等。",
+              "default": "unknown"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "evidence_turns": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "uniqueItems": true,
+              "default": []
+            }
+          }
+        },
+
+        "income": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["income_bracket", "main_source", "payment_capacity", "confidence", "evidence_turns"],
+          "description": "收入与支付能力（面向销售定价与成交流程）。",
+          "properties": {
+            "income_bracket": {
+              "type": "string",
+              "description": "月收入区间（人民币）。仅可取以下枚举，避免自由文本导致脏数据。",
+              "enum": [
+                "<5k",
+                "5k-10k",
+                "10k-20k",
+                "20k-40k",
+                ">=40k",
+                "unknown"
+              ]
+            },
+            "main_source": {
+              "type": "string",
+              "description": "主要收入来源。",
+              "enum": [
+                "工资",
+                "个体经营",
+                "投资理财",
+                "赡养/家庭支持",
+                "补贴/津贴",
+                "unknown"
+              ]
+            },
+            "payment_capacity": {
+              "type": "string",
+              "description": "支付能力（结合价格敏感/一次性支付或分期意愿）。",
+              "enum": ["低", "中", "高", "unknown"]
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "evidence_turns": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "uniqueItems": true,
+              "default": []
+            },
+            "notes": {
+              "type": "string",
+              "description": "可选：补充说明（如‘有报销/发票需求’、‘偏向体验后再买’）。",
+              "default": "unknown"
+            }
+          }
+        }
       }
     }
   }
